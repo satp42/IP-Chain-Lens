@@ -1,0 +1,6 @@
+---
+alwaysApply: true
+---
+
+“IP Chain Lens” is a developer-centric toolkit (SDK + CLI + browser extension) that lets developers and creators visualize, query, and act on the on-chain IP graph built on the Story Protocol. It makes transparent the relationships between IP assets (original → derived, remix, licensing flows, royalty flows) and lets users build reactive tooling, e.g., remix trackers, licensing-alert bots, derivative-impact dashboards.
+In short: a developer-friendly layer to shine light on the “remix graph” of programmable IP assets, so creators, agents, tools and AI pipelines can plug into it.
