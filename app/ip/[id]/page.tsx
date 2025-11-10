@@ -9,7 +9,8 @@ import { LicenseTermsDisplay } from "@/components/ip-asset/license-terms"
 import { RoyaltyInfoDisplay } from "@/components/ip-asset/royalty-info"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
-import { ArrowLeft, Loader2 } from "lucide-react"
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+import { ArrowLeft, Loader2, AlertTriangle } from "lucide-react"
 import Link from "next/link"
 import {
   buildIpGraph,
@@ -29,6 +30,7 @@ export default function IpAssetPage() {
   const [licenseTerms, setLicenseTerms] = useState<LicenseTerms[]>([])
   const [royaltyInfo, setRoyaltyInfo] = useState<RoyaltyInfo | null>(null)
   const [selectedNodeId, setSelectedNodeId] = useState<Address | null>(null)
+  const [isLargeGraph, setIsLargeGraph] = useState(false)
 
   useEffect(() => {
     if (!isAddress(ipId)) {
@@ -50,8 +52,19 @@ export default function IpAssetPage() {
         setTimeout(() => reject(new Error("Request timed out")), 30000) // 30 second timeout
       })
 
-      // Fetch graph data with reduced depth for faster loading
-      const graphPromise = buildIpGraph(ipId, 1) // Reduced from 2 to 1 for speed
+      // First check if this is a large graph
+      const rootAsset = await getIpAsset(ipId)
+      const totalRelationships = (rootAsset?.parentCount || 0) + (rootAsset?.derivativeCount || 0)
+      
+      if (totalRelationships > 100) {
+        setIsLargeGraph(true)
+        console.warn(`Large graph detected: ${totalRelationships} total relationships. Limiting to 50 nodes.`)
+      }
+
+      // Fetch graph data with limits to handle large graphs
+      // depth: 1 = only immediate parents/children
+      // maxNodes: 50 = maximum nodes to display (prevents overload on large graphs)
+      const graphPromise = buildIpGraph(ipId, 1, 50)
       const graph = await Promise.race([graphPromise, timeoutPromise])
       setGraphData(graph)
 
@@ -134,6 +147,18 @@ export default function IpAssetPage() {
           </p>
         </div>
       </div>
+
+      {/* Large Graph Warning */}
+      {isLargeGraph && (
+        <Alert variant="warning">
+          <AlertTriangle className="h-4 w-4" />
+          <AlertTitle>Large Graph Detected</AlertTitle>
+          <AlertDescription>
+            This IP asset has {currentIpAsset.parentCount + currentIpAsset.derivativeCount} total relationships. 
+            For performance, we're showing only the first 50 nodes. The full graph may contain {currentIpAsset.derivativeCount} derivatives and {currentIpAsset.parentCount} parents.
+          </AlertDescription>
+        </Alert>
+      )}
 
       {/* Main Content */}
       <div className="grid gap-6 lg:grid-cols-3">

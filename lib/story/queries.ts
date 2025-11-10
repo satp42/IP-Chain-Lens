@@ -420,14 +420,20 @@ export async function fetchIpMetadata(metadataURI: string): Promise<IpMetadata |
 
 /**
  * Build full graph data for an IP asset and its relationships using edges API
+ * Optimized for large graphs with configurable limits
  */
-export async function buildIpGraph(rootIpId: Address, depth: number = 2): Promise<GraphData> {
+export async function buildIpGraph(
+  rootIpId: Address, 
+  depth: number = 1,
+  maxNodes: number = 50
+): Promise<GraphData> {
   const nodes: IpAssetNode[] = []
   const edges: IpAssetEdge[] = []
   const visited = new Set<Address>()
-  const edgeCache = new Map<string, any[]>() // Cache edge queries
+  const edgeCache = new Map<string, any[]>()
 
-  async function fetchEdgesForIp(ipId: Address, direction: "parent" | "child"): Promise<any[]> {
+  // Fetch edges with limit to prevent overwhelming API
+  async function fetchEdgesForIp(ipId: Address, direction: "parent" | "child", limit: number = 50): Promise<any[]> {
     const cacheKey = `${ipId}-${direction}`
     if (edgeCache.has(cacheKey)) {
       return edgeCache.get(cacheKey)!
@@ -435,35 +441,42 @@ export async function buildIpGraph(rootIpId: Address, depth: number = 2): Promis
 
     const apiUrl = process.env.NEXT_PUBLIC_STORY_API_URL || "https://api.storyapis.com/api/v4"
     
-    const response = await fetch(`${apiUrl}/assets/edges`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(process.env.NEXT_PUBLIC_STORY_API_KEY && {
-          "X-Api-Key": process.env.NEXT_PUBLIC_STORY_API_KEY,
+    try {
+      const response = await fetch(`${apiUrl}/assets/edges`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(process.env.NEXT_PUBLIC_STORY_API_KEY && {
+            "X-Api-Key": process.env.NEXT_PUBLIC_STORY_API_KEY,
+          }),
+        },
+        body: JSON.stringify({
+          where: direction === "parent" ? { childIpId: ipId } : { parentIpId: ipId },
+          pagination: { limit: Math.min(limit, 200), offset: 0 }, // Limit to prevent overload
+          orderBy: "blockNumber",
+          orderDirection: "asc",
         }),
-      },
-      body: JSON.stringify({
-        where: direction === "parent" ? { childIpId: ipId } : { parentIpId: ipId },
-        pagination: { limit: 200, offset: 0 },
-        orderBy: "blockNumber",
-        orderDirection: "asc",
-      }),
-    })
+      })
 
-    if (!response.ok) {
+      if (!response.ok) {
+        edgeCache.set(cacheKey, [])
+        return []
+      }
+
+      const result = await response.json()
+      const edgeData = result.data || []
+      edgeCache.set(cacheKey, edgeData)
+      return edgeData
+    } catch (err) {
+      console.error(`Error fetching edges for ${ipId}:`, err)
       edgeCache.set(cacheKey, [])
       return []
     }
-
-    const result = await response.json()
-    const edgeData = result.data || []
-    edgeCache.set(cacheKey, edgeData)
-    return edgeData
   }
 
   async function traverse(ipId: Address, currentDepth: number, generation: number) {
-    if (currentDepth > depth || visited.has(ipId)) return
+    // Stop if we've reached depth limit, visited this node, or hit max nodes
+    if (currentDepth > depth || visited.has(ipId) || nodes.length >= maxNodes) return
     visited.add(ipId)
 
     // Fetch IP asset data
@@ -473,9 +486,18 @@ export async function buildIpGraph(rootIpId: Address, depth: number = 2): Promis
     ipAsset.generation = generation
     nodes.push(ipAsset)
 
+    // Only fetch edges if we haven't hit the node limit
+    if (nodes.length >= maxNodes) return
+
+    // For depth 0 (root), fetch more children. For other depths, limit more aggressively
+    const childLimit = currentDepth === 0 ? 20 : 5
+    const parentLimit = currentDepth === 0 ? 20 : 5
+
     // Get parent edges
-    const parentEdges = await fetchEdgesForIp(ipId, "parent")
+    const parentEdges = await fetchEdgesForIp(ipId, "parent", parentLimit)
     for (const edge of parentEdges) {
+      if (nodes.length >= maxNodes) break
+      
       const parentId = edge.parentIpId as Address
       edges.push({
         source: parentId,
@@ -487,12 +509,18 @@ export async function buildIpGraph(rootIpId: Address, depth: number = 2): Promis
         blockNumber: edge.blockNumber,
         txHash: edge.txHash,
       })
-      await traverse(parentId, currentDepth + 1, generation - 1)
+      
+      // Only traverse parents if depth > 0
+      if (currentDepth < depth) {
+        await traverse(parentId, currentDepth + 1, generation - 1)
+      }
     }
 
-    // Get derivative edges
-    const childEdges = await fetchEdgesForIp(ipId, "child")
+    // Get derivative edges (children)
+    const childEdges = await fetchEdgesForIp(ipId, "child", childLimit)
     for (const edge of childEdges) {
+      if (nodes.length >= maxNodes) break
+      
       const childId = edge.childIpId as Address
       edges.push({
         source: ipId,
@@ -504,7 +532,11 @@ export async function buildIpGraph(rootIpId: Address, depth: number = 2): Promis
         blockNumber: edge.blockNumber,
         txHash: edge.txHash,
       })
-      await traverse(childId, currentDepth + 1, generation + 1)
+      
+      // Only traverse children if depth > 0
+      if (currentDepth < depth) {
+        await traverse(childId, currentDepth + 1, generation + 1)
+      }
     }
   }
 
